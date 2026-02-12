@@ -73,9 +73,12 @@ Use the lowercase/underscore version of the name for `PLUGIN_NAME`, filenames, a
 - The `[status]` configd action must output `"<plugin> is running"` or `"<plugin> is not running"`
 - `$internalModelName` in ApiGeneralController must match the `<id>` prefix in `forms/general.xml`
 - Model fields go at root of `<items>` (no intermediate wrapper element)
+- The `enabled` BooleanField should default to `1` (enabled on fresh install) for better UX
 - Use `escapeHtml()` for all dynamic content in Volt templates
 - PHP files use `<?php` opening tag, scripts use `#!/usr/local/bin/php` shebang
-- Copyright header in all PHP files
+- BSD 2-Clause license header required in **all** PHP/inc files (mandatory for upstream submission)
+- Follow PSR-12 coding standard (max line length 120 chars)
+- Add `PLUGIN_DEPENDS` in Makefile for required packages (e.g., `os-node_exporter${PLUGIN_PKGSUFFIX}`)
 
 ### After scaffolding
 
@@ -98,8 +101,12 @@ If `$ARGUMENTS` contains a firewall hostname or the user asks to build:
 
 ### Build
 
-Run `./build.sh` which uploads source to a build firewall via SSH, runs `bmake package`
+Run `./build.sh` which uploads source to a build firewall via SSH, runs `sudo bmake package`
 remotely (requires FreeBSD), and downloads the `.pkg` to `dist/`.
+
+The build must use `sudo` because `bmake package` invokes `pkg` for dependency checking,
+which requires root privileges. The cleanup step also needs `sudo rm -rf` since root-owned
+files are created during the build.
 
 Git version.sh warnings about "not a git repository" are expected and harmless.
 
@@ -110,9 +117,10 @@ If a target firewall hostname was given in `$ARGUMENTS`:
 1. Find the `.pkg` in `dist/`
 2. Upload: `scp dist/<pkg-file> <firewall>:/tmp/`
 3. Remove old version if installed: `ssh <firewall> "sudo pkg delete -y <pkg-name>"`
-4. Install: `ssh <firewall> "sudo pkg install -y /tmp/<pkg-file>"`
-5. Start the service: `ssh <firewall> "sudo configctl <plugin_name> start"`
-6. Verify: `ssh <firewall> "sudo configctl <plugin_name> status"`
+4. If upgrading from a renamed plugin, clean up old files (old .inc, old scripts dir, old actions conf, old syslog conf) and remove old model config from `/conf/config.xml`
+5. Install: `ssh <firewall> "sudo pkg install -y /tmp/<pkg-file>"`
+6. Start the service: `ssh <firewall> "sudo configctl <plugin_name> start"`
+7. Verify: `ssh <firewall> "sudo configctl <plugin_name> status"`
 
 ## Editing an Existing Plugin
 
@@ -132,6 +140,10 @@ When creating new files or modifying plugin structure, follow the patterns docum
 - **Menu/ACLs not appearing**: Run `sudo /usr/local/etc/rc.configure_plugins POST_INSTALL`
 - **Status shows "not running"**: Check the `[status]` action output matches expected format
 - **Config not applied after save**: Ensure the save button calls the `reconfigure` endpoint
+- **`pkg: No package(s) matching`**: Build requires `sudo bmake package` for pkg dependency checks
+- **`Permission denied` on cleanup**: Use `sudo rm -rf` since build creates root-owned files
+- **Enabled checkbox not checked after fresh install**: Set `<Default>1</Default>` on the `enabled` field in the model XML
+- **Old menu entries after rename**: Remove old plugin files from firewall and run `rc.configure_plugins POST_INSTALL`
 
 ## Reference
 

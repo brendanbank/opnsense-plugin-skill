@@ -66,6 +66,14 @@ PLUGIN_MAINTAINER=  email@example.com
 .include "../../Mk/plugins.mk"
 ```
 
+To declare package dependencies, add `PLUGIN_DEPENDS`:
+
+```makefile
+PLUGIN_DEPENDS=     os-node_exporter${PLUGIN_PKGSUFFIX}
+```
+
+`${PLUGIN_PKGSUFFIX}` resolves to `-devel` for development builds and is empty for release builds.
+
 The build system derives:
 - Package name: `os-<PLUGIN_NAME>` (prefix `os-` is automatic)
 - Package file: `work/pkg/os-<PLUGIN_NAME>-<VERSION>.pkg`
@@ -108,7 +116,7 @@ Defines fields, validation, and where config is stored in `config.xml`:
     <version>1.0.0</version>
     <items>
         <enabled type="BooleanField">
-            <Default>0</Default>
+            <Default>1</Default>
         </enabled>
         <myfield type="TextField">
             <Default>some default</Default>
@@ -450,7 +458,7 @@ Defines where the plugin appears in the web UI:
 - `order` controls sort position within the section
 - `VisibleName` overrides the tag name for display
 - `cssClass` uses FontAwesome icon classes (e.g., `fa fa-line-chart`)
-- Log viewer URL pattern: `/ui/diagnostics/log/<facility>`
+- Log viewer URL pattern: `/ui/diagnostics/log/<facility>` where underscores in the facility name become slashes (e.g., facility `metrics_exporter` → URL `/ui/diagnostics/log/metrics/exporter`)
 
 ## ACL (`ACL/ACL.xml`)
 
@@ -573,8 +581,9 @@ firewall via SSH. A `build.sh` script automates this:
 
 1. Uploads `Mk/`, `Templates/`, `Scripts/` from `tmp/plugins/` plus plugin source
 2. Creates directory structure so `../../Mk/plugins.mk` resolves from the plugin Makefile
-3. Runs `bmake package` via SSH
+3. Runs `sudo bmake package` via SSH (sudo needed for `pkg` dependency checks)
 4. Downloads `.pkg` to `dist/`
+5. Cleans up with `sudo rm -rf` (build creates root-owned files)
 
 ### Installing a package
 
@@ -605,6 +614,14 @@ ssh firewall "sudo configctl <plugin> start"
 Step 3 (`rc.configure_plugins POST_INSTALL`) is **critical** — without it, menus and ACLs
 won't appear even if you manually delete cache files.
 
+## Coding Standards
+
+- **BSD 2-Clause license header** required in all PHP/inc files (mandatory for OPNsense upstream submission)
+- **PSR-12** coding standard recommended (max line length 120 chars)
+- Check with: `phpcs --standard=PSR12 src/`
+- Daemon scripts will have one unavoidable PSR-12 warning (side effects + declarations in same file)
+- **"OPN" prefix** is reserved for OPNsense business edition plugins — do not use it
+
 ## Common Pitfalls
 
 - **Error 126 from configd**: Script missing execute permission (`chmod +x`)
@@ -619,3 +636,7 @@ won't appear even if you manually delete cache files.
 - **Daemon not writing output**: Check file/directory permissions; daemon runs as `nobody`
 - **Package builds but service won't start after install**: Verify all scripts under
   `src/opnsense/scripts/` have `+x` in the source repo before building
+- **`pkg: No package(s) matching`**: Build needs `sudo bmake package` for dependency resolution
+- **Enabled checkbox unchecked on fresh install**: Set `<Default>1</Default>` on the `enabled` field
+- **Old plugin files after rename**: Manually remove old .inc, scripts dir, actions conf, syslog conf,
+  and old model entry from `/conf/config.xml`, then run `rc.configure_plugins POST_INSTALL`
