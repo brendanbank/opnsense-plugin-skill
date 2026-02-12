@@ -78,7 +78,7 @@ Use the lowercase/underscore version of the name for `PLUGIN_NAME`, filenames, a
 - PHP files use `<?php` opening tag, scripts use `#!/usr/local/bin/php` shebang
 - BSD 2-Clause license header required in **all** PHP/inc files (mandatory for upstream submission)
 - Follow PSR-12 coding standard (max line length 120 chars)
-- Add `PLUGIN_DEPENDS` in Makefile for required packages (e.g., `os-node_exporter${PLUGIN_PKGSUFFIX}`)
+- Add `PLUGIN_DEPENDS` in Makefile if the plugin requires other packages
 
 ### After scaffolding
 

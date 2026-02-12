@@ -4,9 +4,9 @@ Complete reference for building OPNsense MVC plugins, based on the official deve
 documentation at https://docs.opnsense.org/develop.html and practical implementation experience.
 
 Throughout this document:
-- `<Plugin>` = PascalCase plugin name (e.g., `HelloWorld`, `GatewayExporter`)
-- `<plugin>` = lowercase/underscore plugin name matching `PLUGIN_NAME` in Makefile
-- `<pluginlowercase>` = all-lowercase version used in URLs (e.g., `helloworld`, `gatewayexporter`)
+- `<Plugin>` = PascalCase plugin name (e.g., `HelloWorld`, `DnsBlocklist`)
+- `<plugin>` = lowercase/underscore plugin name matching `PLUGIN_NAME` in Makefile (e.g., `hello_world`)
+- `<pluginlowercase>` = all-lowercase version used in URLs (e.g., `helloworld`, `dnsblocklist`)
 
 ## Directory Structure
 
@@ -69,7 +69,7 @@ PLUGIN_MAINTAINER=  email@example.com
 To declare package dependencies, add `PLUGIN_DEPENDS`:
 
 ```makefile
-PLUGIN_DEPENDS=     os-node_exporter${PLUGIN_PKGSUFFIX}
+PLUGIN_DEPENDS=     os-some_dependency${PLUGIN_PKGSUFFIX}
 ```
 
 `${PLUGIN_PKGSUFFIX}` resolves to `-devel` for development builds and is empty for release builds.
@@ -458,7 +458,7 @@ Defines where the plugin appears in the web UI:
 - `order` controls sort position within the section
 - `VisibleName` overrides the tag name for display
 - `cssClass` uses FontAwesome icon classes (e.g., `fa fa-line-chart`)
-- Log viewer URL pattern: `/ui/diagnostics/log/<facility>` where underscores in the facility name become slashes (e.g., facility `metrics_exporter` → URL `/ui/diagnostics/log/metrics/exporter`)
+- Log viewer URL pattern: `/ui/diagnostics/log/<facility>` where underscores in the facility name become slashes (e.g., facility `hello_world` → URL `/ui/diagnostics/log/hello/world`)
 
 ## ACL (`ACL/ACL.xml`)
 
@@ -505,11 +505,18 @@ Place at: `src/opnsense/service/templates/OPNsense/Syslog/local/<plugin>.conf`
 require_once("config.inc");
 
 $mdl = new \OPNsense\<Plugin>\<Plugin>();
-$config = [
-    'interval' => max(5, min(300, (int)$mdl->interval->__toString() ?: 15)),
-    'outputpath' => $mdl->outputpath->__toString() ?: '/default/path',
-];
-file_put_contents('/usr/local/etc/<plugin>.conf', json_encode($config, JSON_PRETTY_PRINT) . "\n");
+$config = [];
+
+// Read each model field, validate, and add to config array
+// Example for a text field:
+$myfield = (string)$mdl->myfield;
+if (!empty($myfield)) {
+    $config['myfield'] = $myfield;
+}
+
+$config_path = '/usr/local/etc/<plugin>.conf';
+file_put_contents($config_path, json_encode($config, JSON_PRETTY_PRINT) . "\n");
+chmod($config_path, 0644);
 ```
 
 Must have execute permission (`chmod +x`). Without it, configd returns error 126.
@@ -521,7 +528,7 @@ Must have execute permission (`chmod +x`). Without it, configd returns error 126
 <?php
 require_once("config.inc");
 
-openlog("<plugin>", LOG_PID | LOG_PERROR, LOG_DAEMON);
+openlog("<plugin>", LOG_DAEMON, LOG_LOCAL4);
 
 $running = true;
 $reconfigure = true;
@@ -538,15 +545,16 @@ while ($running) {
         $reconfigure = false;
     }
 
-    // Do work...
+    // Do work here...
+    // Use syslog() for logging: syslog(LOG_NOTICE, 'message');
 
-    // Atomic file write pattern (prevents partial reads)
-    $tmp = $output_path . '.tmp.' . getmypid();
-    file_put_contents($tmp, $output);
-    chmod($tmp, 0644);
-    rename($tmp, $output_path);  // Atomic on POSIX
+    // If writing output files, use atomic write (prevents partial reads):
+    // $tmp = $path . '.tmp.' . getmypid();
+    // file_put_contents($tmp, $data);
+    // chmod($tmp, 0644);
+    // rename($tmp, $path);  // Atomic on POSIX
 
-    sleep($interval);
+    sleep($config['interval'] ?? 60);
 }
 
 closelog();
