@@ -33,6 +33,17 @@ Start Claude Code and type `/build` — the skill should appear in autocomplete.
 
 ## Usage
 
+### Create a new plugin from scratch
+
+```
+/build new MyPlugin
+```
+
+Claude will ask for a description, maintainer email, and whether the plugin needs a daemon,
+then generate all required boilerplate files — Makefile, model, controllers, views, forms,
+configd actions, menu, ACL, and optionally daemon scripts with signal handling and syslog
+integration.
+
 ### Build and deploy
 
 ```
