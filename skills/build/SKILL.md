@@ -1,7 +1,7 @@
 ---
 name: build
-description: Build, edit, or create OPNsense MVC plugins. Use when working on plugin source, packaging, or deploying to a firewall.
-argument-hint: "[target-firewall]"
+description: Build, edit, or create OPNsense MVC plugins. Use when working on plugin source, packaging, deploying to a firewall, or scaffolding a new plugin from scratch.
+argument-hint: "[new <PluginName>] | [target-firewall]"
 ---
 
 # OPNsense Plugin Development
@@ -13,9 +13,81 @@ Use this skill when building, editing, or creating OPNsense MVC plugins.
 Read the project's `Makefile` to determine `PLUGIN_NAME`, `PLUGIN_VERSION`, and other metadata.
 Derive the plugin's namespace and paths from the directory structure under `src/`.
 
+## Creating a New Plugin from Scratch
+
+If the user asks to create a new plugin, or `$ARGUMENTS` starts with `new`:
+
+Ask the user for:
+1. **Plugin name** (PascalCase, e.g., `HelloWorld`) — used for namespace and directory names
+2. **Short description** — used in Makefile `PLUGIN_COMMENT` and pkg-descr
+3. **Maintainer email**
+4. **Whether it needs a daemon** (background service) or is config/UI only
+
+Then generate all required files using the templates in [plugin-reference.md](plugin-reference.md).
+Use the lowercase/underscore version of the name for `PLUGIN_NAME`, filenames, and configd actions
+(e.g., `HelloWorld` → `hello_world`). Use the all-lowercase version (no underscores) for URLs
+(e.g., `helloworld`).
+
+### Files to generate
+
+**Always required:**
+
+| File | Purpose |
+|------|---------|
+| `Makefile` | Plugin metadata (`PLUGIN_NAME`, `PLUGIN_VERSION`, etc.) |
+| `pkg-descr` | Package description with `WWW:` line |
+| `src/etc/inc/plugins.inc.d/<plugin>.inc` | Service registration & lifecycle hooks |
+| `src/opnsense/mvc/app/models/OPNsense/<Plugin>/<Plugin>.php` | Model class (extends BaseModel) |
+| `src/opnsense/mvc/app/models/OPNsense/<Plugin>/<Plugin>.xml` | Model schema with `enabled` BooleanField |
+| `src/opnsense/mvc/app/models/OPNsense/<Plugin>/ACL/ACL.xml` | Access control patterns |
+| `src/opnsense/mvc/app/models/OPNsense/<Plugin>/Menu/Menu.xml` | Menu entries under Services |
+| `src/opnsense/mvc/app/controllers/OPNsense/<Plugin>/GeneralController.php` | UI settings page |
+| `src/opnsense/mvc/app/controllers/OPNsense/<Plugin>/Api/GeneralController.php` | Settings API |
+| `src/opnsense/mvc/app/controllers/OPNsense/<Plugin>/Api/ServiceController.php` | Service control API |
+| `src/opnsense/mvc/app/controllers/OPNsense/<Plugin>/forms/general.xml` | Form field definitions |
+| `src/opnsense/mvc/app/views/OPNsense/<Plugin>/general.volt` | Settings page template |
+| `src/opnsense/service/conf/actions.d/actions_<plugin>.conf` | Configd actions (start/stop/status) |
+
+**If the plugin has a daemon:**
+
+| File | Purpose |
+|------|---------|
+| `src/opnsense/scripts/OPNsense/<Plugin>/generate_config.php` | Config generator (runs as root) |
+| `src/opnsense/scripts/OPNsense/<Plugin>/<plugin>.php` | Main daemon script |
+| `src/opnsense/service/templates/OPNsense/Syslog/local/<plugin>.conf` | Syslog filter |
+
+**Optional (generate if user requests):**
+
+| File | Purpose |
+|------|---------|
+| `src/opnsense/mvc/app/controllers/OPNsense/<Plugin>/StatusController.php` | UI status page |
+| `src/opnsense/mvc/app/controllers/OPNsense/<Plugin>/Api/StatusController.php` | Status data API |
+| `src/opnsense/mvc/app/views/OPNsense/<Plugin>/status.volt` | Status page template |
+| `src/opnsense/scripts/OPNsense/<Plugin>/<utility>.php` | Utility scripts |
+| `build.sh` | Remote build automation script |
+| `.gitignore` | Ignore `tmp/`, `dist/`, `.claude/` |
+
+### Critical rules when generating files
+
+- All scripts in `src/opnsense/scripts/` **must** be created with execute permissions
+- The `[status]` configd action must output `"<plugin> is running"` or `"<plugin> is not running"`
+- `$internalModelName` in ApiGeneralController must match the `<id>` prefix in `forms/general.xml`
+- Model fields go at root of `<items>` (no intermediate wrapper element)
+- Use `escapeHtml()` for all dynamic content in Volt templates
+- PHP files use `<?php` opening tag, scripts use `#!/usr/local/bin/php` shebang
+- Copyright header in all PHP files
+
+### After scaffolding
+
+Tell the user:
+1. Review the generated files and customize the model fields for their use case
+2. Clone the plugins build system: `git clone https://github.com/opnsense/plugins.git tmp/plugins`
+3. Add `tmp/`, `dist/`, and `.claude/` to `.gitignore`
+4. See [plugin-reference.md](plugin-reference.md) for details on each component
+
 ## Building a Package
 
-If `$ARGUMENTS` is provided or the user asks to build:
+If `$ARGUMENTS` contains a firewall hostname or the user asks to build:
 
 ### Prerequisites
 
@@ -42,7 +114,7 @@ If a target firewall hostname was given in `$ARGUMENTS`:
 5. Start the service: `ssh <firewall> "sudo configctl <plugin_name> start"`
 6. Verify: `ssh <firewall> "sudo configctl <plugin_name> status"`
 
-## Creating or Editing a Plugin
+## Editing an Existing Plugin
 
 When creating new files or modifying plugin structure, follow the patterns documented in
 [plugin-reference.md](plugin-reference.md). Key rules:
@@ -53,7 +125,6 @@ When creating new files or modifying plugin structure, follow the patterns docum
 - `$internalModelName` in the API controller must match the `<id>` prefix in `forms/*.xml`
 - Model fields go at root of `<items>` unless explicitly wrapping in a container
 - Always use `escapeHtml()` for dynamic content in Volt templates (XSS prevention)
-- Copyright: Brendan Bank, year 2026
 
 ## Troubleshooting
 
