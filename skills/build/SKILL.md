@@ -79,6 +79,10 @@ Use the lowercase/underscore version of the name for `PLUGIN_NAME`, filenames, a
 - BSD 2-Clause license header required in **all** PHP/inc files (mandatory for upstream submission)
 - Follow PSR-12 coding standard (max line length 120 chars)
 - Add `PLUGIN_DEPENDS` in Makefile if the plugin requires other packages
+- Daemon should run as `nobody` via `daemon -u nobody` (privilege separation)
+- Pidfile needs `chmod 644` after daemon start (so web UI can read it for status)
+- If generating `+POST_INSTALL.post`, include `register.php install` for proper firmware registration
+- If generating `+PRE_DEINSTALL.pre`, include `register.php remove` for clean deregistration
 
 ### After scaffolding
 
@@ -87,6 +91,14 @@ Tell the user:
 2. Clone the plugins build system: `git clone https://github.com/opnsense/plugins.git tmp/plugins`
 3. Add `tmp/`, `dist/`, and `.claude/` to `.gitignore`
 4. See [plugin-reference.md](plugin-reference.md) for details on each component
+
+### Version bumping
+
+When releasing a new version:
+1. Update `PLUGIN_VERSION` in Makefile
+2. Add a changelog entry to `pkg-descr` (above the `WWW:` line)
+3. Update version references in documentation and README if present
+4. Rebuild docs if the project has a documentation pipeline
 
 ## Building a Package
 
@@ -119,8 +131,10 @@ If a target firewall hostname was given in `$ARGUMENTS`:
 3. Remove old version if installed: `ssh <firewall> "sudo pkg delete -y <pkg-name>"`
 4. If upgrading from a renamed plugin, clean up old files (old .inc, old scripts dir, old actions conf, old syslog conf) and remove old model config from `/conf/config.xml`
 5. Install: `ssh <firewall> "sudo pkg install -y /tmp/<pkg-file>"`
-6. Start the service: `ssh <firewall> "sudo configctl <plugin_name> start"`
-7. Verify: `ssh <firewall> "sudo configctl <plugin_name> status"`
+6. Register the plugin (if `+POST_INSTALL.post` doesn't do it automatically):
+   `ssh <firewall> "sudo /usr/local/opnsense/scripts/firmware/register.php install <plugin_id>"`
+7. Start the service: `ssh <firewall> "sudo configctl <plugin_name> start"`
+8. Verify: `ssh <firewall> "sudo configctl <plugin_name> status"`
 
 ## Editing an Existing Plugin
 
@@ -144,6 +158,9 @@ When creating new files or modifying plugin structure, follow the patterns docum
 - **`Permission denied` on cleanup**: Use `sudo rm -rf` since build creates root-owned files
 - **Enabled checkbox not checked after fresh install**: Set `<Default>1</Default>` on the `enabled` field in the model XML
 - **Old menu entries after rename**: Remove old plugin files from firewall and run `rc.configure_plugins POST_INSTALL`
+- **Plugin shows "(misconfigured)" in Firmware > Plugins**: Add `register.php install` to `+POST_INSTALL.post` (see plugin-reference.md Plugin Registration section)
+- **Pidfile permission denied / status shows "not running" when running**: Add `chmod 644 /var/run/<plugin>.pid` after daemon start in configd action
+- **Daemon can't access `config.xml`**: Use the two-phase pattern — `generate_config.php` (root) writes a JSON config file, daemon (nobody) reads the JSON file. If daemon modules need configd calls, use the minimal autoloader pattern (see plugin-reference.md)
 
 ## Reference
 

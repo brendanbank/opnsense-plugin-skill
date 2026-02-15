@@ -339,7 +339,7 @@ Defines commands callable via `configctl <plugin> <action>`:
 
 ```ini
 [start]
-command:/usr/local/opnsense/scripts/OPNsense/<Plugin>/generate_config.php && /usr/sbin/daemon -f -p /var/run/<plugin>.pid /usr/local/opnsense/scripts/OPNsense/<Plugin>/<daemon>.php
+command:/usr/local/opnsense/scripts/OPNsense/<Plugin>/generate_config.php && /usr/sbin/daemon -u nobody -f -p /var/run/<plugin>.pid /usr/local/opnsense/scripts/OPNsense/<Plugin>/<daemon>.php && chmod 644 /var/run/<plugin>.pid
 parameters:
 type:script
 message:Starting <Plugin>
@@ -351,7 +351,7 @@ type:script
 message:Stopping <Plugin>
 
 [restart]
-command:/bin/pkill -F /var/run/<plugin>.pid 2>/dev/null; rm -f /var/run/<plugin>.pid; sleep 1; /usr/local/opnsense/scripts/OPNsense/<Plugin>/generate_config.php && /usr/sbin/daemon -f -p /var/run/<plugin>.pid /usr/local/opnsense/scripts/OPNsense/<Plugin>/<daemon>.php
+command:/bin/pkill -F /var/run/<plugin>.pid 2>/dev/null; rm -f /var/run/<plugin>.pid; sleep 1; /usr/local/opnsense/scripts/OPNsense/<Plugin>/generate_config.php && /usr/sbin/daemon -u nobody -f -p /var/run/<plugin>.pid /usr/local/opnsense/scripts/OPNsense/<Plugin>/<daemon>.php && chmod 644 /var/run/<plugin>.pid
 parameters:
 type:script
 message:Restarting <Plugin>
@@ -497,6 +497,26 @@ Place at: `src/opnsense/service/templates/OPNsense/Syslog/local/<plugin>.conf`
 2. **Unprivileged phase** (`<daemon>.php`): Runs as `nobody` via `daemon(8)`, reads the
    JSON config file, does the actual work
 
+### Privilege separation
+
+The daemon should run as `nobody` using `daemon -u nobody`. This requires three things:
+
+1. **`-u nobody` in configd actions**: Add the flag to `[start]` and `[restart]` commands
+2. **`chmod 644` on the pidfile**: `daemon(8)` creates the pidfile as root before switching
+   user, so the web UI (running as `www`) can't read it for status checks. Fix by appending
+   `&& chmod 644 /var/run/<plugin>.pid` after the daemon command in the configd action.
+3. **Ownership fix in `generate_config.php`**: When upgrading from a version that ran as root,
+   existing output files will be owned by root and the `nobody` daemon can't overwrite them.
+   Fix ownership in the config generator (which runs as root):
+
+```php
+// Fix ownership of existing output files for upgrade from root-daemon version
+foreach (glob($outputdir . '*.prom') as $file) {
+    chown($file, 'nobody');
+    chgrp($file, 'nobody');
+}
+```
+
 ### Config generator (`generate_config.php`)
 
 ```php
@@ -523,10 +543,12 @@ Must have execute permission (`chmod +x`). Without it, configd returns error 126
 
 ### Daemon script
 
+The daemon runs as `nobody` and cannot access `config.xml`, so it does not require `config.inc`.
+It reads configuration from the JSON file written by `generate_config.php`.
+
 ```php
 #!/usr/local/bin/php
 <?php
-require_once("config.inc");
 
 openlog("<plugin>", LOG_DAEMON, LOG_LOCAL4);
 
@@ -564,6 +586,109 @@ Signal handling:
 - `SIGHUP` — reload config without restart (sent by `[reconfigure]` action)
 - `SIGTERM`/`SIGINT` — graceful shutdown
 
+### Minimal autoloader for unprivileged scripts
+
+When the daemon runs as `nobody`, it can't `require_once("config.inc")` because that needs
+read access to `/conf/config.xml` (root-only). If your daemon or its modules need OPNsense
+framework classes (e.g., `OPNsense\Core\Backend` for configd calls), use a minimal PSR-4
+autoloader instead:
+
+```php
+<?php
+// lib/autoload.php — Minimal autoloader for OPNsense MVC library classes.
+// Replaces config.inc bootstrap so scripts can run as nobody.
+spl_autoload_register(function ($class) {
+    $path = '/usr/local/opnsense/mvc/app/library/'
+        . str_replace('\\', '/', $class) . '.php';
+    if (file_exists($path)) {
+        require_once $path;
+    }
+});
+```
+
+This loads only the classes actually used (typically just `OPNsense\Core\Backend` and its
+dependencies) without pulling in the full OPNsense bootstrap.
+
+### Using configd Backend from scripts
+
+Unprivileged scripts can call configd actions through the `OPNsense\Core\Backend` class,
+which communicates with configd via a Unix socket. This provides a privilege boundary —
+scripts don't need root to gather system data.
+
+```php
+require_once __DIR__ . '/lib/autoload.php';  // Minimal autoloader (see above)
+
+$backend = new \OPNsense\Core\Backend();
+
+// Run a configd action and get output
+$raw = trim($backend->configdRun('interface gateways status'));
+$data = json_decode($raw, true);
+
+// Run with parameters
+$result = $backend->configdpRun('filter rule', ['param1', 'param2']);
+```
+
+Key points:
+- `configdRun('<plugin> <action>')` — run an action, return stdout
+- `configdpRun('<plugin> <action>', [params])` — run with positional parameters
+- The configd socket is accessible by `nobody`, so no root needed
+- Use this pattern when daemon modules need live system data (gateway status, firewall
+  counters, interface info, etc.)
+
+### Modular script architecture
+
+For plugins with multiple data sources (e.g., a metrics exporter with per-subsystem collectors),
+use auto-discovery to load modules:
+
+```php
+// lib/collector_loader.php
+function load_collectors(string $dir): array
+{
+    $collectors = [];
+    foreach (glob($dir . '/*Collector.php') as $file) {
+        $class = basename($file, '.php');
+        $type = strtolower(preg_replace('/Collector$/', '', $class));
+        require_once $file;
+        if (class_exists($class, false)) {
+            $collectors[$type] = $class;
+        }
+    }
+    return $collectors;
+}
+```
+
+Each module follows an implicit interface with static methods:
+
+```php
+class GatewayCollector
+{
+    public static function name(): string { return 'Gateways'; }
+    public static function defaultEnabled(): bool { return true; }
+    public static function collect(): string { /* return output */ }
+    public static function status(): array { /* return status data */ }
+}
+```
+
+To make modules individually enable/disable-able via the UI, store per-module settings as a
+JSON-encoded string in a `TextField` model field:
+
+```xml
+<collectors type="TextField">
+    <Default>{}</Default>
+</collectors>
+```
+
+The config generator merges discovered modules with user overrides:
+
+```php
+$all_collectors = load_collectors(COLLECTORS_DIR);
+$overrides = json_decode($mdl->collectors->__toString(), true) ?: [];
+$config = [];
+foreach ($all_collectors as $type => $class) {
+    $config[$type] = isset($overrides[$type]) ? (bool)$overrides[$type] : $class::defaultEnabled();
+}
+```
+
 ## Packaging
 
 ### Build system
@@ -599,6 +724,109 @@ firewall via SSH. A `build.sh` script automates this:
 pkg install ./os-<plugin>-<version>.pkg    # Install with dependency checks
 pkg add ./os-<plugin>-<version>.pkg        # Install without dependency checks
 pkg delete -y os-<plugin>                  # Remove
+```
+
+### Package hook scripts
+
+The build system supports hook scripts that run during package install/remove. Place these
+files at the plugin root (same level as Makefile):
+
+| File | When it runs |
+|------|-------------|
+| `+PRE_INSTALL.pre` | Before file extraction (runs on both fresh install and upgrade) |
+| `+POST_INSTALL.post` | After file extraction, appended to auto-generated post-install |
+| `+PRE_DEINSTALL.pre` | Before file removal on `pkg delete` |
+
+Critical: `pkg install` over an existing installation does NOT run deinstall hooks — only
+`+PRE_INSTALL.pre` and `+POST_INSTALL.post` run. Handle upgrade cleanup in `+PRE_INSTALL.pre`,
+not `+PRE_DEINSTALL.pre`.
+
+### Plugin registration
+
+For plugins installed outside the OPNsense UI (via `pkg install` on the command line or from
+a custom repo), the plugin must register itself with the firmware system. Without registration,
+the plugin shows as "(misconfigured)" in Firmware > Plugins.
+
+**`+POST_INSTALL.post`** — register on install:
+
+```sh
+REGISTER="/usr/local/opnsense/scripts/firmware/register.php"
+VERSION_INFO="/usr/local/opnsense/version/<plugin>"
+if [ -f "$REGISTER" ] && [ -f "$VERSION_INFO" ]; then
+    PLUGIN_ID=$(sed -n 's/.*"product_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$VERSION_INFO")
+    if [ -n "$PLUGIN_ID" ]; then
+        $REGISTER install "$PLUGIN_ID"
+    fi
+fi
+```
+
+**`+PRE_DEINSTALL.pre`** — deregister on removal:
+
+```sh
+REGISTER="/usr/local/opnsense/scripts/firmware/register.php"
+VERSION_INFO="/usr/local/opnsense/version/<plugin>"
+if [ -f "$REGISTER" ] && [ -f "$VERSION_INFO" ]; then
+    PLUGIN_ID=$(sed -n 's/.*"product_id"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$VERSION_INFO")
+    if [ -n "$PLUGIN_ID" ]; then
+        $REGISTER remove "$PLUGIN_ID"
+    fi
+fi
+```
+
+The `VERSION_INFO` file is auto-generated by the build system at
+`/usr/local/opnsense/version/<plugin>` and contains the `product_id`.
+
+### Hosting a package repository
+
+The Firmware > Plugins "i" (info) button uses `pkg rquery` to fetch package details from a
+remote repository. Without a hosted repo, clicking "i" shows "details not available".
+
+**Build step** — copy the `.pkg` to a repo directory and index it with `pkg repo`:
+
+```sh
+PAGES_REPO="$REPO_ROOT/docs/repo"
+rm -f "$PAGES_REPO"/os-<plugin>*.pkg
+cp "$BUILT_PKG" "$PAGES_REPO/"
+pkg repo "$PAGES_REPO/"
+```
+
+After `pkg repo`, the directory contains: `meta.conf`, `packagesite.pkg`, `packagesite.tzst`,
+`data.pkg`, `data.tzst`, `filesite.yaml`, plus the `.pkg` file itself.
+
+**GitHub Pages** — serve `docs/repo/` via GitHub Pages (master branch, `/docs` path).
+Requires a `.nojekyll` file in `docs/` root so directories starting with `_` are served.
+
+**`+POST_INSTALL.post`** — add the repo config on the firewall:
+
+```sh
+REPO_CONF="/usr/local/etc/pkg/repos/<plugin>.conf"
+if [ ! -f "$REPO_CONF" ]; then
+    cat > "$REPO_CONF" <<REPOEOF
+<plugin>: {
+  url: "https://<user>.github.io/<repo>/repo",
+  enabled: yes
+}
+REPOEOF
+    pkg update -f -r <plugin>
+fi
+```
+
+**`+PRE_DEINSTALL.pre`** — remove the repo config:
+
+```sh
+rm -f /usr/local/etc/pkg/repos/<plugin>.conf
+```
+
+This is the same pattern used by community repos (mimugmail, repo-mihak).
+
+### PLUGIN_WWW
+
+The `PLUGIN_WWW` Makefile variable sets the pkg `www` metadata field (distinct from the
+`WWW:` line in `pkg-descr`, which is for display text). If not set, it defaults to
+`https://opnsense.org/`.
+
+```makefile
+PLUGIN_WWW=         https://github.com/user/repo
 ```
 
 ## Deployment (Manual, without package)
@@ -648,3 +876,11 @@ won't appear even if you manually delete cache files.
 - **Enabled checkbox unchecked on fresh install**: Set `<Default>1</Default>` on the `enabled` field
 - **Old plugin files after rename**: Manually remove old .inc, scripts dir, actions conf, syslog conf,
   and old model entry from `/conf/config.xml`, then run `rc.configure_plugins POST_INSTALL`
+- **Pidfile not readable by web UI**: Status shows "not running" even when running. Fix:
+  `chmod 644 /var/run/<plugin>.pid` after daemon start in the configd action
+- **Plugin shows "(misconfigured)" in Firmware > Plugins**: Missing `register.php install`
+  call in `+POST_INSTALL.post` (see Plugin Registration section)
+- **Daemon can't write output files after upgrade**: Files owned by root from a previous
+  version that ran as root. Fix: `chown`/`chgrp` to `nobody` in `generate_config.php`
+- **`pkg install` over existing doesn't run deinstall hooks**: Only `+PRE_INSTALL.pre` and
+  `+POST_INSTALL.post` run on upgrade. Handle upgrade cleanup in `+PRE_INSTALL.pre`

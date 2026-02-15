@@ -88,7 +88,7 @@ Claude can reference the skill's knowledge to answer questions like:
 For building packages:
 - An OPNsense/FreeBSD host accessible via SSH (for `bmake` and `pkg create`)
 - The OPNsense plugins repo cloned locally: `git clone https://github.com/opnsense/plugins.git tmp/plugins`
-- A `build.sh` script in your plugin repo (see the [metrics-exporter](https://github.com/brendanbank/opnsense-metrics-exporter) for an example)
+- A `build.sh` script in your plugin repo (see [metrics-exporter](https://github.com/brendanbank/opnsense-metrics-exporter) or [kea-ddns](https://github.com/brendanbank/opnsense-kea-ddns) for examples)
 
 ## License
 
